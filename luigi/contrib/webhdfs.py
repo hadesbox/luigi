@@ -1,16 +1,35 @@
+# -*- coding: utf-8 -*-
+#
+# Copyright 2012-2015 Spotify AB
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+# http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+#
 """
-Provides a WebHdfsTarget and WebHdfsClient using the
-python [hdfs](https://pypi.python.org/pypi/hdfs/) library.
+Provides a :class:`WebHdfsTarget` and :class:`WebHdfsClient` using the
+`Python hdfs <https://pypi.python.org/pypi/hdfs/>`_
 """
+
 from __future__ import absolute_import
 
-import os
-import random
 import logging
-import tempfile
+import os
+import sys
+
+from luigi import six
 
 from luigi import configuration
-from luigi.target import FileSystemTarget
+from luigi.target import FileSystemTarget, AtomicLocalFile
+from luigi.format import get_default_format, MixedUnicodeBytes
 
 logger = logging.getLogger("luigi-interface")
 
@@ -24,21 +43,35 @@ except ImportError:
 class WebHdfsTarget(FileSystemTarget):
     fs = None
 
-    def __init__(self, path, client=None):
+    def __init__(self, path, client=None, format=None):
         super(WebHdfsTarget, self).__init__(path)
         path = self.path
         self.fs = client or WebHdfsClient()
+        if format is None:
+            format = get_default_format()
+
+        # Allow to write unicode in file for retrocompatibility
+        if sys.version_info[:2] <= (2, 6):
+            format = format >> MixedUnicodeBytes
+
+        self.format = format
 
     def open(self, mode='r'):
         if mode not in ('r', 'w'):
             raise ValueError("Unsupported open mode '%s'" % mode)
+
         if mode == 'r':
-            return ReadableWebHdfsFile(path=self.path, client=self.fs)
-        elif mode == 'w':
-            return AtomicWebHdfsFile(path=self.path, client=self.fs)
+            return self.format.pipe_reader(
+                ReadableWebHdfsFile(path=self.path, client=self.fs)
+            )
+
+        return self.format.pipe_writer(
+            AtomicWebHdfsFile(path=self.path, client=self.fs)
+        )
 
 
 class ReadableWebHdfsFile(object):
+
     def __init__(self, path, client):
         self.path = path
         self.client = client
@@ -46,7 +79,8 @@ class ReadableWebHdfsFile(object):
 
     def read(self):
         self.generator = self.client.read(self.path)
-        return list(self.generator)[0]
+        res = list(self.generator)[0]
+        return res
 
     def readlines(self, char='\n'):
         self.generator = self.client.read(self.path, buffer_char=char)
@@ -63,7 +97,7 @@ class ReadableWebHdfsFile(object):
         has_next = True
         while has_next:
             try:
-                chunk = self.generator.next()
+                chunk = six.next(self.generator)
                 yield chunk
             except StopIteration:
                 has_next = False
@@ -73,35 +107,18 @@ class ReadableWebHdfsFile(object):
         self.generator.close()
 
 
-class AtomicWebHdfsFile(file):
+class AtomicWebHdfsFile(AtomicLocalFile):
     """
     An Hdfs file that writes to a temp file and put to WebHdfs on close.
     """
-    def __init__(self, path, client):
-        unique_name = 'luigi-webhdfs-tmp-%09d' % random.randrange(0, 1e10)
-        self.tmp_path = os.path.join(tempfile.gettempdir(), unique_name)
-        self.path = path
-        self.client = client
-        super(AtomicWebHdfsFile, self).__init__(self.tmp_path, 'w')
 
-    def close(self):
-        super(AtomicWebHdfsFile, self).close()
+    def __init__(self, path, client):
+        self.client = client
+        super(AtomicWebHdfsFile, self).__init__(path)
+
+    def move_to_final_destination(self):
         if not self.client.exists(self.path):
             self.client.upload(self.path, self.tmp_path)
-
-    def __enter__(self):
-        return self
-
-    def __exit__(self, exc_type, exc, traceback):
-        """Close/commit the file if there are no exception"""
-        if exc_type:
-            return
-        return file.__exit__(self, exc_type, exc, traceback)
-
-    def __del__(self):
-        """Remove the temporary directory"""
-        if os.path.exists(self.tmp_path):
-            os.remove(self.tmp_path)
 
 
 class WebHdfsClient(object):
@@ -126,11 +143,13 @@ class WebHdfsClient(object):
         return self.webhdfs.walk(path, depth=depth)
 
     def exists(self, path):
-        """Returns true if the path exists and false otherwise"""
+        """
+        Returns true if the path exists and false otherwise.
+        """
         try:
             self.webhdfs.status(path)
             return True
-        except webhdfs.util.HdfsError, e:
+        except webhdfs.util.HdfsError as e:
             if str(e).startswith('File does not exist: '):
                 return False
             else:

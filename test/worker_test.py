@@ -1,36 +1,46 @@
-# Copyright (c) 2012 Spotify AB
+# -*- coding: utf-8 -*-
 #
-# Licensed under the Apache License, Version 2.0 (the "License"); you may not
-# use this file except in compliance with the License. You may obtain a copy of
-# the License at
+# Copyright 2012-2015 Spotify AB
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
 #
 # http://www.apache.org/licenses/LICENSE-2.0
 #
 # Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS, WITHOUT
-# WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
-# License for the specific language governing permissions and limitations under
-# the License.
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+#
+from __future__ import print_function
 
-import mock
-import shutil
-import time
-from luigi.scheduler import CentralPlannerScheduler
-import luigi.worker
-from luigi.worker import Worker
-from luigi import Task, ExternalTask, RemoteScheduler
-from helpers import with_config
-import unittest
+import functools
 import logging
-import threading
 import os
+import shutil
 import signal
-import luigi.notifications
 import tempfile
+import threading
+import time
+from helpers import unittest
+
+import luigi.notifications
+import luigi.worker
+import mock
+from helpers import with_config
+from luigi import ExternalTask, RemoteScheduler, Task
+from luigi.mock import MockTarget, MockFileSystem
+from luigi.scheduler import CentralPlannerScheduler
+from luigi.worker import Worker
+from luigi import six
+
 luigi.notifications.DEBUG = True
 
 
 class DummyTask(Task):
+
     def __init__(self, *args, **kwargs):
         super(DummyTask, self).__init__(*args, **kwargs)
         self.has_run = False
@@ -52,9 +62,52 @@ class DynamicDummyTask(Task):
     def run(self):
         with self.output().open('w') as f:
             f.write('Done!')
+        time.sleep(0.5)  # so we can benchmark & see if parallelization works
+
+
+class DynamicDummyTaskWithNamespace(DynamicDummyTask):
+    task_namespace = 'banana'
+
+
+class DynamicRequires(Task):
+    p = luigi.Parameter()
+    use_banana_task = luigi.BoolParameter(default=False)
+
+    def output(self):
+        return luigi.LocalTarget(os.path.join(self.p, 'parent'))
+
+    def run(self):
+        if self.use_banana_task:
+            task_cls = DynamicDummyTaskWithNamespace
+        else:
+            task_cls = DynamicDummyTask
+        dummy_targets = yield [task_cls(os.path.join(self.p, str(i)))
+                               for i in range(5)]
+        dummy_targets += yield [task_cls(os.path.join(self.p, str(i)))
+                                for i in range(5, 7)]
+        with self.output().open('w') as f:
+            for i, d in enumerate(dummy_targets):
+                for line in d.open('r'):
+                    print('%d: %s' % (i, line.strip()), file=f)
+
+
+class DynamicRequiresOtherModule(Task):
+    p = luigi.Parameter()
+
+    def output(self):
+        return luigi.LocalTarget(os.path.join(self.p, 'baz'))
+
+    def run(self):
+        import other_module
+        other_target_foo = yield other_module.OtherModuleTask(os.path.join(self.p, 'foo'))
+        other_target_bar = yield other_module.OtherModuleTask(os.path.join(self.p, 'bar'))
+
+        with self.output().open('w') as f:
+            f.write('Done!')
 
 
 class WorkerTest(unittest.TestCase):
+
     def setUp(self):
         # InstanceCache.disable()
         self.sch = CentralPlannerScheduler(retry_delay=100, remove_delay=1000, worker_disconnect_delay=10)
@@ -73,6 +126,7 @@ class WorkerTest(unittest.TestCase):
 
     def test_dep(self):
         class A(Task):
+
             def run(self):
                 self.has_run = True
 
@@ -81,6 +135,7 @@ class WorkerTest(unittest.TestCase):
         a = A()
 
         class B(Task):
+
             def requires(self):
                 return a
 
@@ -101,11 +156,13 @@ class WorkerTest(unittest.TestCase):
 
     def test_external_dep(self):
         class A(ExternalTask):
+
             def complete(self):
                 return False
         a = A()
 
         class B(Task):
+
             def requires(self):
                 return a
 
@@ -128,6 +185,7 @@ class WorkerTest(unittest.TestCase):
 
     def test_fail(self):
         class A(Task):
+
             def run(self):
                 self.has_run = True
                 raise Exception()
@@ -138,6 +196,7 @@ class WorkerTest(unittest.TestCase):
         a = A()
 
         class B(Task):
+
             def requires(self):
                 return a
 
@@ -161,15 +220,18 @@ class WorkerTest(unittest.TestCase):
     def test_unknown_dep(self):
         # see central_planner_test.CentralPlannerTest.test_remove_dep
         class A(ExternalTask):
+
             def complete(self):
                 return False
 
         class C(Task):
+
             def complete(self):
                 return True
 
         def get_b(dep):
             class B(Task):
+
                 def requires(self):
                     return dep
 
@@ -199,6 +261,7 @@ class WorkerTest(unittest.TestCase):
 
     def test_unfulfilled_dep(self):
         class A(Task):
+
             def complete(self):
                 return self.done
 
@@ -207,6 +270,7 @@ class WorkerTest(unittest.TestCase):
 
         def get_b(a):
             class B(A):
+
                 def requires(self):
                     return a
             b = B()
@@ -223,43 +287,14 @@ class WorkerTest(unittest.TestCase):
         self.assertTrue(a.complete())
         self.assertTrue(b.complete())
 
-    def test_dynamic_dependencies(self):
-
-        class DynamicRequires(Task):
-            p = luigi.Parameter()
-
-            def output(self):
-                return luigi.LocalTarget(os.path.join(self.p, 'parent'))
-
-            def run(self):
-                dummy_targets = yield [DynamicDummyTask(os.path.join(self.p, str(i)))
-                                     for i in range(5)]
-                dummy_targets += yield [DynamicDummyTask(os.path.join(self.p, str(i)))
-                                       for i in range(5, 7)]
-                with self.output().open('w') as f:
-                    for i, d in enumerate(dummy_targets):
-                        for line in d.open('r'):
-                            print >>f, '%d: %s' % (i, line.strip())
-
-        p = tempfile.mkdtemp()
-        try:
-            t = DynamicRequires(p=p)
-            luigi.build([t], local_scheduler=True)
-            self.assertTrue(t.complete())
-
-            # loop through output and verify
-            f = t.output().open('r')
-            for i in xrange(7):
-                self.assertEqual(f.readline().strip(), '%d: Done!' % i)
-        finally:
-            shutil.rmtree(p)
-
     def test_avoid_infinite_reschedule(self):
         class A(Task):
+
             def complete(self):
                 return False
 
         class B(Task):
+
             def complete(self):
                 return False
 
@@ -271,6 +306,7 @@ class WorkerTest(unittest.TestCase):
 
     def test_allow_reschedule_with_many_missing_deps(self):
         class A(Task):
+
             """ Task that must run twice to succeed """
             i = luigi.IntParameter()
 
@@ -303,7 +339,6 @@ class WorkerTest(unittest.TestCase):
         self.assertTrue(b.complete())
         self.assertTrue(all(a.complete() for a in b.deps()))
 
-
     def test_interleaved_workers(self):
         class A(DummyTask):
             pass
@@ -311,6 +346,7 @@ class WorkerTest(unittest.TestCase):
         a = A()
 
         class B(DummyTask):
+
             def requires(self):
                 return a
 
@@ -373,6 +409,7 @@ class WorkerTest(unittest.TestCase):
 
     def test_interleaved_workers3(self):
         class A(DummyTask):
+
             def run(self):
                 logging.debug('running A')
                 time.sleep(0.1)
@@ -381,8 +418,10 @@ class WorkerTest(unittest.TestCase):
         a = A()
 
         class B(DummyTask):
+
             def requires(self):
                 return a
+
             def run(self):
                 logging.debug('running B')
                 super(B, self).run()
@@ -391,7 +430,7 @@ class WorkerTest(unittest.TestCase):
 
         sch = CentralPlannerScheduler(retry_delay=100, remove_delay=1000, worker_disconnect_delay=10)
 
-        w  = Worker(scheduler=sch, worker_id='X', keep_alive=True, count_uniques=True)
+        w = Worker(scheduler=sch, worker_id='X', keep_alive=True, count_uniques=True)
         w2 = Worker(scheduler=sch, worker_id='Y', keep_alive=True, count_uniques=True, wait_interval=0.1)
 
         self.assertTrue(w.add(a))
@@ -408,6 +447,7 @@ class WorkerTest(unittest.TestCase):
 
     def test_die_for_non_unique_pending(self):
         class A(DummyTask):
+
             def run(self):
                 logging.debug('running A')
                 time.sleep(0.1)
@@ -416,8 +456,10 @@ class WorkerTest(unittest.TestCase):
         a = A()
 
         class B(DummyTask):
+
             def requires(self):
                 return a
+
             def run(self):
                 logging.debug('running B')
                 super(B, self).run()
@@ -426,7 +468,7 @@ class WorkerTest(unittest.TestCase):
 
         sch = CentralPlannerScheduler(retry_delay=100, remove_delay=1000, worker_disconnect_delay=10)
 
-        w  = Worker(scheduler=sch, worker_id='X', keep_alive=True, count_uniques=True)
+        w = Worker(scheduler=sch, worker_id='X', keep_alive=True, count_uniques=True)
         w2 = Worker(scheduler=sch, worker_id='Y', keep_alive=True, count_uniques=True, wait_interval=0.1)
 
         self.assertTrue(w.add(b))
@@ -443,6 +485,7 @@ class WorkerTest(unittest.TestCase):
     def test_complete_exception(self):
         "Tests that a task is still scheduled if its sister task crashes in the complete() method"
         class A(DummyTask):
+
             def complete(self):
                 raise Exception("doh")
 
@@ -454,6 +497,7 @@ class WorkerTest(unittest.TestCase):
         c = C()
 
         class B(DummyTask):
+
             def requires(self):
                 return a, c
 
@@ -469,6 +513,7 @@ class WorkerTest(unittest.TestCase):
 
     def test_requires_exception(self):
         class A(DummyTask):
+
             def requires(self):
                 raise Exception("doh")
 
@@ -480,6 +525,7 @@ class WorkerTest(unittest.TestCase):
         c = C()
 
         class B(DummyTask):
+
             def requires(self):
                 return a, c
 
@@ -493,7 +539,46 @@ class WorkerTest(unittest.TestCase):
         self.assertFalse(a.has_run)
         w.stop()
 
+
+class DynamicDependenciesTest(unittest.TestCase):
+    n_workers = 1
+    timeout = float('inf')
+
+    def setUp(self):
+        self.p = tempfile.mkdtemp()
+
+    def tearDown(self):
+        shutil.rmtree(self.p)
+
+    def test_dynamic_dependencies(self, use_banana_task=False):
+        t0 = time.time()
+        t = DynamicRequires(p=self.p, use_banana_task=use_banana_task)
+        luigi.build([t], local_scheduler=True, workers=self.n_workers)
+        self.assertTrue(t.complete())
+
+        # loop through output and verify
+        f = t.output().open('r')
+        for i in range(7):
+            self.assertEqual(f.readline().strip(), '%d: Done!' % i)
+
+        self.assertTrue(time.time() - t0 < self.timeout)
+
+    def test_dynamic_dependencies_with_namespace(self):
+        self.test_dynamic_dependencies(use_banana_task=True)
+
+    def test_dynamic_dependencies_other_module(self):
+        t = DynamicRequiresOtherModule(p=self.p)
+        luigi.build([t], local_scheduler=True, workers=self.n_workers)
+        self.assertTrue(t.complete())
+
+
+class DynamicDependenciesWithMultipleWorkersTest(DynamicDependenciesTest):
+    n_workers = 100
+    timeout = 3.0  # We run 7 tasks that take 0.5s each so it should take less than 3.5s
+
+
 class WorkerPingThreadTests(unittest.TestCase):
+
     def test_ping_retry(self):
         """ Worker ping fails once. Ping continues to try to connect to scheduler
 
@@ -535,25 +620,25 @@ class WorkerPingThreadTests(unittest.TestCase):
         self.assertFalse(w._keep_alive_thread.is_alive())
 
 
-EMAIL_CONFIG = {"core": {"error-email": "not-a-real-email-address-for-test-only"}}
+def email_patch(test_func):
+    EMAIL_CONFIG = {"core": {"error-email": "not-a-real-email-address-for-test-only"}, "email": {"force-send": "true"}}
+    emails = []
+
+    def mock_send_email(sender, recipients, msg):
+        emails.append(msg)
+
+    @with_config(EMAIL_CONFIG)
+    @functools.wraps(test_func)
+    @mock.patch('smtplib.SMTP')
+    def run_test(self, smtp):
+        smtp().sendmail.side_effect = mock_send_email
+        test_func(self, emails)
+
+    return run_test
 
 
-class EmailTest(unittest.TestCase):
-    def setUp(self):
-        super(EmailTest, self).setUp()
+class WorkerEmailTest(unittest.TestCase):
 
-        self.send_email = luigi.notifications.send_email
-        self.last_email = None
-
-        def mock_send_email(subject, message, sender, recipients, image_png=None):
-            self.last_email = (subject, message, sender, recipients, image_png)
-        luigi.notifications.send_email = mock_send_email
-
-    def tearDown(self):
-        luigi.notifications.send_email = self.send_email
-
-
-class WorkerEmailTest(EmailTest):
     def setUp(self):
         super(WorkerEmailTest, self).setUp()
         sch = CentralPlannerScheduler(retry_delay=100, remove_delay=1000, worker_disconnect_delay=10)
@@ -562,8 +647,8 @@ class WorkerEmailTest(EmailTest):
     def tearDown(self):
         self.worker.stop()
 
-    @with_config(EMAIL_CONFIG)
-    def test_connection_error(self):
+    @email_patch
+    def test_connection_error(self, emails):
         sch = RemoteScheduler(host="this_host_doesnt_exist", port=1337, connect_timeout=1)
         worker = Worker(scheduler=sch)
 
@@ -578,44 +663,47 @@ class WorkerEmailTest(EmailTest):
             pass
 
         a = A()
-        self.assertEqual(self.last_email, None)
+        self.assertEqual(emails, [])
         worker.add(a)
         self.assertEqual(self.waits, 2)  # should attempt to add it 3 times
-        self.assertNotEquals(self.last_email, None)
-        self.assertEqual(self.last_email[0], "Luigi: Framework error while scheduling %s" % (a,))
+        self.assertNotEquals(emails, [])
+        self.assertTrue(emails[0].find("Luigi: Framework error while scheduling %s" % (a,)) != -1)
         worker.stop()
 
-    @with_config(EMAIL_CONFIG)
-    def test_complete_error(self):
+    @email_patch
+    def test_complete_error(self, emails):
         class A(DummyTask):
+
             def complete(self):
                 raise Exception("b0rk")
 
         a = A()
-        self.assertEqual(self.last_email, None)
+        self.assertEqual(emails, [])
         self.worker.add(a)
-        self.assertEqual(("Luigi: %s failed scheduling" % (a,)), self.last_email[0])
+        self.assertTrue(emails[0].find("Luigi: %s failed scheduling" % (a,)) != -1)
         self.worker.run()
-        self.assertEqual(("Luigi: %s failed scheduling" % (a,)), self.last_email[0])
+        self.assertTrue(emails[0].find("Luigi: %s failed scheduling" % (a,)) != -1)
         self.assertFalse(a.has_run)
 
-    @with_config(EMAIL_CONFIG)
-    def test_complete_return_value(self):
+    @email_patch
+    def test_complete_return_value(self, emails):
         class A(DummyTask):
+
             def complete(self):
                 pass  # no return value should be an error
 
         a = A()
-        self.assertEqual(self.last_email, None)
+        self.assertEqual(emails, [])
         self.worker.add(a)
-        self.assertEqual(("Luigi: %s failed scheduling" % (a,)), self.last_email[0])
+        self.assertTrue(emails[0].find("Luigi: %s failed scheduling" % (a,)) != -1)
         self.worker.run()
-        self.assertEqual(("Luigi: %s failed scheduling" % (a,)), self.last_email[0])
+        self.assertTrue(emails[0].find("Luigi: %s failed scheduling" % (a,)) != -1)
         self.assertFalse(a.has_run)
 
-    @with_config(EMAIL_CONFIG)
-    def test_run_error(self):
+    @email_patch
+    def test_run_error(self, emails):
         class A(luigi.Task):
+
             def complete(self):
                 return False
 
@@ -624,29 +712,32 @@ class WorkerEmailTest(EmailTest):
 
         a = A()
         self.worker.add(a)
-        self.assertEqual(self.last_email, None)
+        self.assertEqual(emails, [])
         self.worker.run()
-        self.assertEqual(("Luigi: %s FAILED" % (a,)), self.last_email[0])
+        self.assertTrue(emails[0].find("Luigi: %s FAILED" % (a,)) != -1)
 
-    def test_no_error(self):
+    @email_patch
+    def test_no_error(self, emails):
         class A(DummyTask):
             pass
         a = A()
-        self.assertEqual(self.last_email, None)
+        self.assertEqual(emails, [])
         self.worker.add(a)
-        self.assertEqual(self.last_email, None)
+        self.assertEqual(emails, [])
         self.worker.run()
-        self.assertEqual(self.last_email, None)
+        self.assertEqual(emails, [])
         self.assertTrue(a.complete())
 
 
 class RaiseSystemExit(luigi.Task):
+
     def run(self):
         raise SystemExit("System exit!!")
 
 
 class SuicidalWorker(luigi.Task):
     signal = luigi.IntParameter()
+
     def run(self):
         os.kill(os.getpid(), self.signal)
 
@@ -663,6 +754,10 @@ class HungWorker(luigi.Task):
 
 
 class MultipleWorkersTest(unittest.TestCase):
+
+    # This pass under python3 when run as `nosetests test/worker_test.py`
+    # but not as `nosetests test`. Probably some side effect on previous tests
+    @unittest.skipIf(six.PY3, 'This test fail on python3 when run with tox.')
     def test_multiple_workers(self):
         # Test using multiple workers
         # Also test generating classes dynamically since this may reflect issues with
@@ -671,12 +766,18 @@ class MultipleWorkersTest(unittest.TestCase):
         # other implementations of multiprocessing (using spawn etc) may fail
         class MyDynamicTask(luigi.Task):
             x = luigi.Parameter()
+
             def run(self):
                 time.sleep(0.1)
 
         t0 = time.time()
-        luigi.build([MyDynamicTask(i) for i in xrange(100)], workers=100, local_scheduler=True)
-        self.assertTrue(time.time() < t0 + 5.0) # should ideally take exactly 0.1s, but definitely less than 10.0
+        luigi.build([MyDynamicTask(i) for i in range(100)], workers=100, local_scheduler=True)
+        self.assertTrue(time.time() < t0 + 5.0)  # should ideally take exactly 0.1s, but definitely less than 10.0
+
+    def test_zero_workers(self):
+        d = DummyTask()
+        luigi.build([d], workers=0, local_scheduler=True)
+        self.assertFalse(d.complete())
 
     def test_system_exit(self):
         # This would hang indefinitely before this fix:
@@ -709,7 +810,7 @@ class MultipleWorkersTest(unittest.TestCase):
 
     @mock.patch('luigi.worker.time')
     def test_purge_hung_worker_default_timeout_time(self, mock_time):
-        w = Worker(worker_processes=2, wait_interval=0.01, worker_timeout=5)
+        w = Worker(worker_processes=2, wait_interval=0.01, timeout=5)
         mock_time.time.return_value = 0
         w.add(HungWorker())
         w._run_task('HungWorker(worker_timeout=None)')
@@ -724,7 +825,7 @@ class MultipleWorkersTest(unittest.TestCase):
 
     @mock.patch('luigi.worker.time')
     def test_purge_hung_worker_override_timeout_time(self, mock_time):
-        w = Worker(worker_processes=2, wait_interval=0.01, worker_timeout=5)
+        w = Worker(worker_processes=2, wait_interval=0.01, timeout=5)
         mock_time.time.return_value = 0
         w.add(HungWorker(10))
         w._run_task('HungWorker(worker_timeout=10)')
@@ -738,5 +839,110 @@ class MultipleWorkersTest(unittest.TestCase):
         self.assertEqual(0, len(w._running_tasks))
 
 
+class Dummy2Task(Task):
+    p = luigi.Parameter()
+
+    def output(self):
+        return MockTarget(self.p)
+
+    def run(self):
+        f = self.output().open('w')
+        f.write('test')
+        f.close()
+
+
+class AssistantTest(unittest.TestCase):
+    def setUp(self):
+        self.sch = CentralPlannerScheduler(retry_delay=100, remove_delay=1000, worker_disconnect_delay=10)
+        self.w = Worker(scheduler=self.sch, worker_id='X')
+        self.assistant = Worker(scheduler=self.sch, worker_id='Y', assistant=True)
+
+    def test_get_work(self):
+        d = Dummy2Task('123')
+        self.w.add(d)
+
+        self.assertFalse(d.complete())
+        self.assistant.run()
+        self.assertTrue(d.complete())
+
+    def test_bad_job_type(self):
+        class Dummy3Task(Dummy2Task):
+            task_family = 'UnknownTaskFamily'
+
+        d = Dummy3Task('123')
+        self.w.add(d)
+
+        self.assertFalse(d.complete())
+        self.assertFalse(self.assistant.run())
+        self.assertFalse(d.complete())
+        self.assertEqual(list(self.sch.task_list('FAILED', '').keys()), [str(d)])
+
+    def test_unimported_job_type(self):
+        class NotImportedTask(luigi.Task):
+            task_family = 'UnimportedTask'
+            task_module = None
+
+        task = NotImportedTask()
+
+        # verify that it can't run the task without the module info necessary to import it
+        self.w.add(task)
+        self.assertFalse(self.assistant.run())
+        self.assertEqual(list(self.sch.task_list('FAILED', '').keys()), ['UnimportedTask()'])
+
+        # check that it can import with the right module
+        task.task_module = 'dummy_test_module.not_imported'
+        self.w.add(task)
+        self.assertTrue(self.assistant.run())
+        self.assertEqual(list(self.sch.task_list('DONE', '').keys()), ['UnimportedTask()'])
+
+
+class ForkBombTask(luigi.Task):
+    depth = luigi.IntParameter()
+    breadth = luigi.IntParameter()
+    p = luigi.Parameter(default=(0, ))  # ehm for some weird reason [0] becomes a tuple...?
+
+    def output(self):
+        return MockTarget('.'.join(map(str, self.p)))
+
+    def run(self):
+        with self.output().open('w') as f:
+            f.write('Done!')
+
+    def requires(self):
+        if len(self.p) < self.depth:
+            for i in range(self.breadth):
+                yield ForkBombTask(self.depth, self.breadth, self.p + (i, ))
+
+
+class TaskLimitTest(unittest.TestCase):
+    def tearDown(self):
+        MockFileSystem().remove('')
+
+    @with_config({'core': {'worker-task-limit': '6'}})
+    def test_task_limit_exceeded(self):
+        w = Worker()
+        t = ForkBombTask(3, 2)
+        w.add(t)
+        w.run()
+        self.assertFalse(t.complete())
+        leaf_tasks = [ForkBombTask(3, 2, branch) for branch in [(0, 0, 0), (0, 0, 1), (0, 1, 0), (0, 1, 1)]]
+        self.assertEquals(3, sum(t.complete() for t in leaf_tasks), "should have gracefully completed as much as possible even though the single last leaf didn't get scheduled")
+
+    @with_config({'core': {'worker-task-limit': '7'}})
+    def test_task_limit_not_exceeded(self):
+        w = Worker()
+        t = ForkBombTask(3, 2)
+        w.add(t)
+        w.run()
+        self.assertTrue(t.complete())
+
+    def test_no_task_limit(self):
+        w = Worker()
+        t = ForkBombTask(4, 2)
+        w.add(t)
+        w.run()
+        self.assertTrue(t.complete())
+
+
 if __name__ == '__main__':
-    unittest.main()
+    luigi.run()

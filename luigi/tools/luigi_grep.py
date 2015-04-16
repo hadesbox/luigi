@@ -1,23 +1,15 @@
 #!/usr/bin/env python
 
-from collections import defaultdict
-
 import argparse
 import json
-import urllib2
+from collections import defaultdict
 
-
-parser = argparse.ArgumentParser(
-    "luigi-grep is used to search for workflows using the luigi scheduler's json api")
-parser.add_argument(
-    "--scheduler-host", default="localhost", help="hostname of the luigi scheduler")
-parser.add_argument(
-    "--scheduler-port", default="8082", help="port of the luigi scheduler")
-parser.add_argument("--prefix", help="prefix of a task query to search for", default=None)
-parser.add_argument("--status", help="search for jobs with the given status", default=None)
+from luigi import six
+from luigi.six.moves.urllib.request import urlopen
 
 
 class LuigiGrep(object):
+
     def __init__(self, host, port):
         self._host = host
         self._port = port
@@ -28,9 +20,9 @@ class LuigiGrep(object):
 
     def _fetch_json(self):
         """Returns the json representation of the dep graph"""
-        print "Fetching from url: " + self.graph_url
-        resp = urllib2.urlopen(self.graph_url).read()
-        return json.loads(resp)
+        print("Fetching from url: " + self.graph_url)
+        resp = urlopen(self.graph_url).read()
+        return json.loads(resp.decode('utf-8'))
 
     def _build_results(self, jobs, job):
         job_info = jobs[job]
@@ -60,7 +52,17 @@ class LuigiGrep(object):
             if job_info['status'].lower() == status.lower():
                 yield self._build_results(jobs, job)
 
-if __name__ == '__main__':
+
+def main():
+    parser = argparse.ArgumentParser(
+        "luigi-grep is used to search for workflows using the luigi scheduler's json api")
+    parser.add_argument(
+        "--scheduler-host", default="localhost", help="hostname of the luigi scheduler")
+    parser.add_argument(
+        "--scheduler-port", default="8082", help="port of the luigi scheduler")
+    parser.add_argument("--prefix", help="prefix of a task query to search for", default=None)
+    parser.add_argument("--status", help="search for jobs with the given status", default=None)
+
     args = parser.parse_args()
     grep = LuigiGrep(args.scheduler_host, args.scheduler_port)
 
@@ -71,8 +73,11 @@ if __name__ == '__main__':
         results = grep.status_search(args.status)
 
     for job in results:
-        print "{name}: {status}, Dependencies:".format(name=job['name'], status=job['status'])
-        for (status, jobs) in job['deps_by_status'].iteritems():
-            print "  status={status}".format(status=status)
+        print("{name}: {status}, Dependencies:".format(name=job['name'], status=job['status']))
+        for (status, jobs) in six.iteritems(job['deps_by_status']):
+            print("  status={status}".format(status=status))
             for job in jobs:
-                print "    {job}".format(job=job)
+                print("    {job}".format(job=job))
+
+if __name__ == '__main__':
+    main()

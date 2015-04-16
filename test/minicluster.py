@@ -1,26 +1,34 @@
-# Copyright (c) 2015 Spotify AB
+# -*- coding: utf-8 -*-
 #
-# Licensed under the Apache License, Version 2.0 (the "License"); you may not
-# use this file except in compliance with the License. You may obtain a copy of
-# the License at
+# Copyright 2012-2015 Spotify AB
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
 #
 # http://www.apache.org/licenses/LICENSE-2.0
 #
 # Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS, WITHOUT
-# WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
-# License for the specific language governing permissions and limitations under
-# the License.
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+#
+
+import getpass
+import os
+
+from luigi import hadoop, hdfs
+from nose.plugins.attrib import attr
 
 import unittest
-from nose.plugins.attrib import attr
+
 from snakebite.minicluster import MiniCluster
-from luigi import hdfs, hadoop
-import os
-import getpass
+
 
 @attr('minicluster')
 class MiniClusterTestCase(unittest.TestCase):
+
     """ Base class for test cases that rely on Hadoop's minicluster functionality. This
     in turn depends on Snakebite's minicluster setup:
 
@@ -59,10 +67,12 @@ class MiniClusterTestCase(unittest.TestCase):
 
 
 class MiniClusterHadoopJobRunner(hadoop.HadoopJobRunner):
+
     ''' The default job runner just reads from config and sets stuff '''
+
     def __init__(self):
         # Locate the hadoop streaming jar in the hadoop directory
-        hadoop_tools_lib = os.path.join(os.environ['HADOOP_HOME'], 'share/hadoop/tools/lib')        
+        hadoop_tools_lib = os.path.join(os.environ['HADOOP_HOME'], 'share/hadoop/tools/lib')
 
         for path in os.listdir(hadoop_tools_lib):
             if path.startswith('hadoop-streaming') and path.endswith('.jar'):

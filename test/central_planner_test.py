@@ -1,36 +1,50 @@
-# Copyright (c) 2012 Spotify AB
+# -*- coding: utf-8 -*-
 #
-# Licensed under the Apache License, Version 2.0 (the "License"); you may not
-# use this file except in compliance with the License. You may obtain a copy of
-# the License at
+# Copyright 2012-2015 Spotify AB
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
 #
 # http://www.apache.org/licenses/LICENSE-2.0
 #
 # Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS, WITHOUT
-# WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
-# License for the specific language governing permissions and limitations under
-# the License.
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+#
 
 import time
-from luigi.scheduler import CentralPlannerScheduler, DONE, FAILED, DISABLED
-import unittest
+from helpers import unittest
+
 import luigi.notifications
+from luigi.scheduler import DISABLED, DONE, FAILED, CentralPlannerScheduler
+
 luigi.notifications.DEBUG = True
 WORKER = 'myworker'
 
 
 class CentralPlannerTest(unittest.TestCase):
+
     def setUp(self):
-        self.sch = CentralPlannerScheduler(retry_delay=100,
-                                           remove_delay=1000,
-                                           worker_disconnect_delay=10,
-                                           disable_persist=10,
-                                           disable_window=10,
-                                           disable_failures=3)
+        super(CentralPlannerTest, self).setUp()
+        conf = self.get_scheduler_config()
+        self.sch = CentralPlannerScheduler(**conf)
         self.time = time.time
 
+    def get_scheduler_config(self):
+        return {
+            'retry_delay': 100,
+            'remove_delay': 1000,
+            'worker_disconnect_delay': 10,
+            'disable_persist': 10,
+            'disable_window': 10,
+            'disable_failures': 3,
+        }
+
     def tearDown(self):
+        super(CentralPlannerTest, self).tearDown()
         if time.time != self.time:
             time.time = self.time
 
@@ -89,7 +103,7 @@ class CentralPlannerTest(unittest.TestCase):
         self.sch.add_task(WORKER, 'A')
         self.assertEqual(self.sch.get_work(WORKER)['task_id'], 'A')
         self.sch.add_task(WORKER, 'A', FAILED)
-        for t in xrange(100):
+        for t in range(100):
             self.setTime(t)
             self.assertEqual(self.sch.get_work(WORKER)['task_id'], None)
             self.sch.ping(WORKER)
@@ -108,7 +122,7 @@ class CentralPlannerTest(unittest.TestCase):
         self.sch.add_task(task_id='A', worker='X')
         self.sch.add_task(task_id='A', worker='Y')
         self.assertEqual(self.sch.get_work(worker='X')['task_id'], 'A')
-        for t in xrange(200):
+        for t in range(200):
             self.setTime(t)
             self.sch.ping(worker='Y')
             if t % 10 == 0:
@@ -137,7 +151,7 @@ class CentralPlannerTest(unittest.TestCase):
         self.assertEqual(self.sch.get_work(worker='X')['task_id'], 'A')
         self.setTime(10000)
         self.sch.add_task(task_id='A', worker='Y')  # Will timeout X but not schedule A for removal
-        for i in xrange(2000):
+        for i in range(2000):
             self.setTime(10000 + i)
             self.sch.ping(worker='Y')
         self.sch.add_task(task_id='A', status=DONE, worker='Y')  # This used to raise an exception since A was removed
@@ -161,6 +175,87 @@ class CentralPlannerTest(unittest.TestCase):
         s = r['running_tasks'][0]
         self.assertEqual(s['task_id'], 'A')
         self.assertEqual(s['worker'], 'X')
+
+    def test_assistant_get_work(self):
+        self.sch.add_task(worker='X', task_id='A')
+        self.sch.add_worker('Y', [])
+
+        self.assertEqual(self.sch.get_work('Y', assistant=True)['task_id'], 'A')
+
+        # check that the scheduler recognizes tasks as running
+        running_tasks = self.sch.task_list('RUNNING', '')
+        self.assertEqual(len(running_tasks), 1)
+        self.assertEqual(list(running_tasks.keys()), ['A'])
+        self.assertEqual(running_tasks['A']['worker_running'], 'Y')
+
+    def test_assistant_get_work_external_task(self):
+        self.sch.add_task('X', task_id='A', runnable=False)
+        self.assertTrue(self.sch.get_work('Y', assistant=True)['task_id'] is None)
+
+    def test_task_fails_when_assistant_dies(self):
+        self.setTime(0)
+        self.sch.add_task(worker='X', task_id='A')
+        self.sch.add_worker('Y', [])
+
+        self.assertEqual(self.sch.get_work('Y', assistant=True)['task_id'], 'A')
+        self.assertEqual(list(self.sch.task_list('RUNNING', '').keys()), ['A'])
+
+        # Y dies for 50 seconds, X stays alive
+        self.setTime(50)
+        self.sch.ping('X')
+        self.assertEqual(list(self.sch.task_list('FAILED', '').keys()), ['A'])
+
+    def test_prune_with_live_assistant(self):
+        self.setTime(0)
+        self.sch.add_task(worker='X', task_id='A')
+        self.sch.get_work('Y', assistant=True)
+        self.sch.add_task(worker='Y', task_id='A', status=DONE, assistant=True)
+
+        # worker X stops communicating, A should be marked for removal
+        self.setTime(600)
+        self.sch.ping('Y')
+        self.sch.prune()
+
+        # A will now be pruned
+        self.setTime(2000)
+        self.sch.prune()
+        self.assertFalse(list(self.sch.task_list('', '')))
+
+    def test_prune_done_tasks(self, expected=None):
+        self.setTime(0)
+        self.sch.add_task(WORKER, task_id='A', status=DONE)
+        self.sch.add_task(WORKER, task_id='B', deps=['A'], status=DONE)
+        self.sch.add_task(WORKER, task_id='C', deps=['B'])
+
+        self.setTime(600)
+        self.sch.ping('ASSISTANT')
+        self.sch.prune()
+        self.setTime(2000)
+        self.sch.ping('ASSISTANT')
+        self.sch.prune()
+
+        self.assertEqual(set(expected or ()), set(self.sch.task_list('', '').keys()))
+
+    def test_keep_tasks_for_assistant(self):
+        self.sch.get_work('ASSISTANT', assistant=True)  # tell the scheduler this is an assistant
+        self.test_prune_done_tasks(['B', 'C'])
+
+    def test_keep_scheduler_disabled_tasks_for_assistant(self):
+        self.sch.get_work('ASSISTANT', assistant=True)  # tell the scheduler this is an assistant
+
+        # create a scheduler disabled task and a worker disabled task
+        for i in range(10):
+            self.sch.add_task(WORKER, 'D', status=FAILED)
+        self.sch.add_task(WORKER, 'E', status=DISABLED)
+
+        # scheduler prunes the worker disabled task
+        self.assertEqual(set(['D', 'E']), set(self.sch.task_list(DISABLED, '')))
+        self.test_prune_done_tasks(['B', 'C', 'D'])
+
+    def test_keep_failed_tasks_for_assistant(self):
+        self.sch.get_work('ASSISTANT', assistant=True)  # tell the scheduler this is an assistant
+        self.sch.add_task(WORKER, 'D', status=FAILED, deps='A')
+        self.test_prune_done_tasks(['A', 'B', 'C', 'D'])
 
     def test_scheduler_resources_none_allow_one(self):
         self.sch.add_task(worker='X', task_id='A', resources={'R1': 1})
@@ -524,6 +619,26 @@ class CentralPlannerTest(unittest.TestCase):
 
         response = self.sch.get_work(WORKER)
         self.assertEqual(3, response['n_pending_tasks'])
+        self.assertEqual(2, response['n_unique_pending'])
+
+    def test_pending_downstream_disable(self):
+        self.sch.add_task(WORKER, 'A', status=DISABLED)
+        self.sch.add_task(WORKER, 'B', deps=('A',))
+        self.sch.add_task(WORKER, 'C', deps=('B',))
+
+        response = self.sch.get_work(WORKER)
+        self.assertTrue(response['task_id'] is None)
+        self.assertEqual(0, response['n_pending_tasks'])
+        self.assertEqual(0, response['n_unique_pending'])
+
+    def test_pending_downstream_failure(self):
+        self.sch.add_task(WORKER, 'A', status=FAILED)
+        self.sch.add_task(WORKER, 'B', deps=('A',))
+        self.sch.add_task(WORKER, 'C', deps=('B',))
+
+        response = self.sch.get_work(WORKER)
+        self.assertTrue(response['task_id'] is None)
+        self.assertEqual(2, response['n_pending_tasks'])
         self.assertEqual(2, response['n_unique_pending'])
 
     def test_prefer_more_dependents(self):

@@ -1,24 +1,28 @@
-# Copyright (c) 2013 Spotify AB
+# -*- coding: utf-8 -*-
 #
-# Licensed under the Apache License, Version 2.0 (the "License"); you may not
-# use this file except in compliance with the License. You may obtain a copy of
-# the License at
+# Copyright 2012-2015 Spotify AB
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
 #
 # http://www.apache.org/licenses/LICENSE-2.0
 #
 # Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS, WITHOUT
-# WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
-# License for the specific language governing permissions and limitations under
-# the License.
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+#
 
-import helpers
-import unittest
+from helpers import unittest
 
+from luigi import six
+
+from helpers import with_config
 import luigi
-
-from luigi.task_status import PENDING, RUNNING, DONE
 from luigi.db_task_history import DbTaskHistory
+from luigi.task_status import DONE, PENDING, RUNNING
 
 
 class DummyTask(luigi.Task):
@@ -31,7 +35,8 @@ class ParamTask(luigi.Task):
 
 
 class DbTaskHistoryTest(unittest.TestCase):
-    @helpers.with_config(dict(task_history=dict(db_connection='sqlite:///:memory:')))
+
+    @with_config(dict(task_history=dict(db_connection='sqlite:///:memory:')))
     def setUp(self):
         self.history = DbTaskHistory()
 
@@ -69,7 +74,7 @@ class DbTaskHistoryTest(unittest.TestCase):
             self.assertEqual(len(records), 1)
             [record] = records
             self.assertEqual(task.task_family, record.name)
-            for param_name, param_value in task.param_kwargs.iteritems():
+            for param_name, param_value in six.iteritems(task.param_kwargs):
                 self.assertTrue(param_name in record.parameters)
                 self.assertEqual(str(param_value), record.parameters[param_name].value)
 

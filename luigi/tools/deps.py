@@ -37,12 +37,12 @@
 #
 
 
-from luigi.task import flatten
 import luigi.interface
-from luigi.target import FileSystemTarget
-from luigi.postgres import PostgresTarget
 from luigi.contrib.ssh import RemoteTarget
+from luigi.postgres import PostgresTarget
 from luigi.s3 import S3Target
+from luigi.target import FileSystemTarget
+from luigi.task import flatten
 
 
 def get_task_requires(task):
@@ -61,6 +61,7 @@ def dfs_paths(start_task, goal_task_name, path=None):
 
 
 class UpstreamArg(luigi.Task):
+
     'Used to provide the global parameter -- upstream'
     upstream = luigi.Parameter(is_global=True, default=None)
 
@@ -87,20 +88,24 @@ def find_deps_cli():
     return find_deps(task, upstream)
 
 
-if __name__ == '__main__':
+def main():
     deps = find_deps_cli()
     for d in deps:
         task_name = d
-        task_output = "n/a"
+        task_output = u"n/a"
         if isinstance(d.output(), RemoteTarget):
-            task_output="[SSH] {0}:{1}".format(d.output()._fs.remote_context.host, d.output().path)
+            task_output = u"[SSH] {0}:{1}".format(d.output()._fs.remote_context.host, d.output().path)
         elif isinstance(d.output(), S3Target):
-            task_output="[S3] {0}".format(d.output().path)
-        elif isinstance(d.output(),FileSystemTarget):
-            task_output="[FileSystem] {0}".format(d.output().path)
-        elif isinstance (d.output(), PostgresTarget):
-            task_output="[DB] {0}:{1}".format(d.output().host, d.output().table)
+            task_output = u"[S3] {0}".format(d.output().path)
+        elif isinstance(d.output(), FileSystemTarget):
+            task_output = u"[FileSystem] {0}".format(d.output().path)
+        elif isinstance(d.output(), PostgresTarget):
+            task_output = u"[DB] {0}:{1}".format(d.output().host, d.output().table)
         else:
-            task_output= "to be determined"
-        print """   TASK: {0}
-                       : {1}""".format(task_name, task_output)
+            task_output = "to be determined"
+        print(u"""   TASK: {0}
+                       : {1}""".format(task_name, task_output))
+
+
+if __name__ == '__main__':
+    main()

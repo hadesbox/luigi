@@ -17,7 +17,32 @@ each controlling a different part of the config. Example
     default-scheduler-host: luigi-host.mycompany.foo
     error-email: foo@bar.baz
 
-Below, we describe each section and the parameters available within it.
+By default, all parameters will be overridden by matching values in the
+configuration file. For instance if you have a Task definition:
+
+.. code:: python
+
+    class DailyReport(luigi.hadoop.JobTask):
+        date = luigi.DateParameter(default=datetime.date.today())
+        # ...
+
+Then you can override the default value for date by providing it in the
+configuration:
+
+::
+
+    [DailyReport]
+    date: 2012-01-01
+
+You can also use ``config_path`` as an argument to the ``Parameter`` if
+you want to use a specific section in the config.
+
+
+Configurable options
+--------------------
+
+Luigi comes with a lot of configurable options. Below, we describe each
+section and the parameters available within it.
 
 
 [core]
@@ -73,6 +98,7 @@ max-reschedules
 
 max-shown-tasks
   .. versionadded:: 1.0.20
+
   The maximum number of tasks returned in a task_list api call. This
   will restrict the number of tasks shown in any section in the
   visualiser. Small values can alleviate frozen browsers when there are
@@ -85,6 +111,20 @@ parallel-scheduling
   If true, the scheduler will compute complete functions of tasks in
   parallel using multiprocessing. This can significantly speed up
   scheduling, but requires that all tasks can be pickled.
+
+retry-external-tasks
+  If true, incomplete external tasks (i.e. tasks where the `run()` method is
+  NotImplemented) will be retested for completion while Luigi is running.
+  This means that if external dependencies are satisfied after a workflow has
+  started, any tasks dependent on that resource will be eligible for running.
+  Note: Every time the task remains incomplete, it will count as FAILED, so
+  normal retry logic applies (see: `disable-num-failures` and `retry-delay`).
+  This setting works best with `worker-keep-alive: true`.
+  If false, external tasks will only be evaluated when Luigi is first invoked.
+  In this case, Luigi will not check whether external dependencies are
+  satisfied  while a workflow is in progress, so dependent tasks will remain
+  PENDING until the workflow is reinvoked.
+  Defaults to false for backwards compatibility.
 
 rpc-connect-timeout
   Number of seconds to wait before timing out when making an API call.
@@ -127,14 +167,23 @@ worker-count-uniques
 worker-keep-alive
   If true, workers will stay alive when they run out of jobs to run, as
   long as they have some pending job waiting to be run. Defaults to
-  true.
+  false.
 
 worker-ping-interval
   Number of seconds to wait between pinging scheduler to let it know
   that the worker is still alive. Defaults to 1.0.
 
+worker-task-limit
+  .. versionadded:: 1.0.25
+
+  Maximum number of tasks to schedule per invocation. Upon exceeding it,
+  the worker will issue a warning and proceed with the workflow obtained
+  thus far. Prevents incidents due to spamming of the scheduler, usually
+  accidental. Default: no limit.
+
 worker-timeout
   .. versionadded:: 1.0.20
+
   Number of seconds after which to kill a task which has been running
   for too long. This provides a default value for all tasks, which can
   be overridden by setting the worker-timeout property in any task. This
@@ -232,9 +281,6 @@ namenode_port
 snakebite_autoconfig
   If true, attempts to automatically detect the host and port of the
   namenode for snakebite queries. Defaults to false.
-
-use_snakebite
-  DEPRECATED - use client instead
 
 
 [hive]
@@ -397,22 +443,96 @@ worker-disconnect-delay
 [spark]
 -------
 
-Parameters controlling the running of Spark jobs
+Parameters controlling the default execution of :py:class:`~luigi.contrib.spark.SparkSubmitTask` and :py:class:`~luigi.contrib.spark.PySparkTask`:
+
+.. deprecated:: 1.1.1
+   :py:class:`~luigi.contrib.spark.SparkJob`, :py:class:`~luigi.contrib.spark.Spark1xJob` and :py:class:`~luigi.contrib.spark.PySpark1xJob`
+    are deprecated. Please use :py:class:`~luigi.contrib.spark.SparkSubmitTask` or :py:class:`~luigi.contrib.spark.PySparkTask`.
+
+spark-submit
+  Command to run in order to submit spark jobs. Default: spark-submit
+
+master
+  Master url to use for spark-submit. Example: local[*], spark://masterhost:7077. Default: Spark default (Prior to 1.1.1: yarn-client)
+
+deploy-mode
+    Whether to launch the driver programs locally ("client") or on one of the worker machines inside the cluster ("cluster"). Default: Spark default
+
+jars
+    Comma-separated list of local jars to include on the driver and executor classpaths. Default: Spark default
+
+py-files
+    Comma-separated list of .zip, .egg, or .py files to place on the PYTHONPATH for Python apps. Default: Spark default
+
+files
+    Comma-separated list of files to be placed in the working directory of each executor. Default: Spark default
+
+conf:
+    Arbitrary Spark configuration property in the form Prop=Value|Prop2=Value2. Default: Spark default
+
+properties-file
+    Path to a file from which to load extra properties. Default: Spark default
+
+driver-memory
+    Memory for driver (e.g. 1000M, 2G). Default: Spark default
+
+driver-java-options
+    Extra Java options to pass to the driver. Default: Spark default
+
+driver-library-path
+    Extra library path entries to pass to the driver. Default: Spark default
+
+driver-class-path
+    Extra class path entries to pass to the driver. Default: Spark default
+
+executor-memory
+    Memory per executor (e.g. 1000M, 2G). Default: Spark default
+
+*Configuration for Spark submit jobs on Spark standalone with cluster deploy mode only:*
+
+driver-cores
+    Cores for driver. Default: Spark default
+
+supervise
+    If given, restarts the driver on failure. Default: Spark default
+
+*Configuration for Spark submit jobs on Spark standalone and Mesos only:*
+
+total-executor-cores
+    Total cores for all executors. Default: Spark default
+
+*Configuration for Spark submit jobs on YARN only:*
+
+executor-cores
+    Number of cores per executor. Default: Spark default
+
+queue
+    The YARN queue to submit to. Default: Spark default
+
+num-executors
+    Number of executors to launch. Default: Spark default
+
+archives
+    Comma separated list of archives to be extracted into the working directory of each executor. Default: Spark default
+
+hadoop-conf-dir
+  Location of the hadoop conf dir. Sets HADOOP_CONF_DIR environment variable
+  when running spark. Example: /etc/hadoop/conf
+
+*Extra configuration for PySparkTask jobs:*
+
+py-packages
+    Comma-separated list of local packages (in your python path) to be distributed to the cluster.
+
+*Parameters controlling the execution of SparkJob jobs (deprecated):*
 
 spark-jar
   Location of the spark jar. Sets SPARK_JAR environment variable when
   running spark. Example:
   /usr/share/spark/jars/spark-assembly-0.8.1-incubating-hadoop2.2.0.jar
 
-hadoop-conf-dir
-  Location of hadoop conf dir. Sets HADOOP_CONF_DIR environment variable
-  when running spark. Example: /etc/hadoop/conf
-
 spark-class
   Location of script to invoke. Example: /usr/share/spark/spark-class
-
-spark-submit
-  Command to run in order to submit spark jobs. Default: spark-submit
 
 
 [task_history]

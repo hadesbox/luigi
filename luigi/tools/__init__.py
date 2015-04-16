@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 # Copyright (c) 2014 Spotify AB
 #
 # Licensed under the Apache License, Version 2.0 (the "License"); you may not
@@ -12,7 +13,8 @@
 # License for the specific language governing permissions and limitations under
 # the License.
 
-"""Sort of a standard library for doing stuff with Tasks at a somewhat abstract level.
+"""
+Sort of a standard library for doing stuff with Tasks at a somewhat abstract level.
 
 Submodule introduced to stop growing util.py unstructured.
 """
